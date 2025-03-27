@@ -1,95 +1,61 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from torchdiffeq import odeint
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import RNN, Dense, Flatten
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras.utils import to_categorical
+import matplotlib.pyplot as plt
 
-# Define the Liquid Time-Constant (LTC) neuron
-class LTCNeuron(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
-        super().__init__()
-        self.W = nn.Linear(hidden_dim, hidden_dim)  # Recurrent weight
-        self.U = nn.Linear(input_dim, hidden_dim)   # Input weight
-        self.b = nn.Parameter(torch.zeros(hidden_dim))
-        self.tau_net = nn.Sequential(
-            nn.Linear(input_dim + hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Softplus()  # Ensure positive time constant
-        )
+
+class LTCCell(tf.keras.layers.Layer):
+    def __init__(self, units, **kwargs):
+        super(LTCCell, self).__init__(**kwargs)
+        self.units = units
     
-    def forward(self, t, state, x):
-        tau = self.tau_net(torch.cat([state, x], dim=-1)) + 1e-2  # Avoid division by zero
-        dh_dt = (self.W(state) + self.U(x) + self.b - state) / tau
-        return dh_dt
-
-# Define the LTC-based RNN model
-class LTCNN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.ltc_cell = LTCNeuron(input_dim, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, output_dim)
+    def build(self, input_shape):
+        self.W = self.add_weight(shape=(input_shape[-1], self.units), initializer='glorot_uniform', trainable=True)
+        self.U = self.add_weight(shape=(self.units, self.units), initializer='orthogonal', trainable=True)
+        self.b = self.add_weight(shape=(self.units,), initializer='zeros', trainable=True)
+        self.tau = self.add_weight(shape=(self.units,), initializer='ones', trainable=True)
     
-    def forward(self, x):
-        batch_size, seq_len, _ = x.shape
-        h = torch.zeros(batch_size, hidden_dim, device=x.device)  # Initial hidden state
-        t_span = torch.linspace(0, seq_len, seq_len, device=x.device)
-        
-        # Solve the ODE for each time step
-        h_seq = odeint(self.ltc_cell, h, t_span, args=(x,))
-        h_final = h_seq[-1]  # Take last time step output
-        return self.output_layer(h_final)
-
-# Define hyperparameters
-input_dim = 28  # Each row of an MNIST image (28x28)
-hidden_dim = 128
-output_dim = 10  # 10 classes (digits 0-9)
-batch_size = 64
-epochs = 10
-lr = 0.001
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Load the Sequential MNIST dataset
-transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze().transpose(0, 1))])
-train_dataset = datasets.MNIST(root="./data", train=True, transform=transform, download=True)
-test_dataset = datasets.MNIST(root="./data", train=False, transform=transform, download=True)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-# Initialize the model, loss, and optimizer
-model = LTCNN(input_dim, hidden_dim, output_dim).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=lr)
-
-# Training loop
-for epoch in range(epochs):
-    model.train()
-    total_loss, correct = 0, 0
-    for images, labels in train_loader:
-        images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-        correct += (outputs.argmax(1) == labels).sum().item()
+    def call(self, inputs, states):
+        prev_output = states[0]
+        new_output = prev_output + (1.0 / self.tau) * (tf.matmul(inputs, self.W) + tf.matmul(prev_output, self.U) + self.b - prev_output)
+        return new_output, [new_output]
     
-    print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}, Accuracy: {correct/len(train_dataset):.4f}")
+    @property
+    def state_size(self):
+        return self.units
 
-# Evaluation function
-def evaluate(model, dataloader):
-    model.eval()
-    correct = 0
-    with torch.no_grad():
-        for images, labels in dataloader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            correct += (outputs.argmax(1) == labels).sum().item()
-    return correct / len(dataloader.dataset)
+# Load and preprocess Sequential MNIST
+def preprocess_mnist():
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    x_train, x_test = x_train / 255.0, x_test / 255.0  # Normalize
+    return (x_train, y_train), (x_test, y_test)
 
-# Evaluate on test data
-test_accuracy = evaluate(model, test_loader)
-print(f"Test Accuracy: {test_accuracy:.4f}")
+(x_train, y_train), (x_test, y_test) = preprocess_mnist()
+
+# Build the model
+ltc_rnn = Sequential([
+    RNN(LTCCell(128)),
+    Dense(64, activation='relu'),
+    Dense(10, activation='softmax')
+])
+
+ltc_rnn.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+ltc_rnn.summary()
+
+# Train the model
+history = ltc_rnn.fit(x_train, y_train, epochs=50, batch_size=64, validation_data=(x_test, y_test))
+
+# Evaluate the model
+ltc_rnn.evaluate(x_test, y_test)
+
+# Plot accuracy over epochs
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.title('Model Accuracy Over Epochs')
+plt.legend()
+plt.show()
