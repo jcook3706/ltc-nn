@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import RNN, Dense, Flatten
+from tensorflow.keras.layers import RNN, Dense, Flatten, Dropout
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.datasets import mnist
 from tensorflow.keras.utils import to_categorical

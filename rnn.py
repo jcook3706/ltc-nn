@@ -27,7 +27,7 @@ model = Sequential([
 model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
 # Train the model
-history = model.fit(x_train, y_train, epochs=20, validation_data=(x_test, y_test), batch_size=64)
+history = model.fit(x_train, y_train, epochs=50, validation_data=(x_test, y_test), batch_size=64)
 
 # Plot accuracy over epochs
 plt.plot(history.history['accuracy'], label='Train Accuracy')
